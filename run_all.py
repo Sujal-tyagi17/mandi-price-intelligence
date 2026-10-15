@@ -17,5 +17,7 @@ STEPS = [
 if __name__ == "__main__":
     for title, script in STEPS:
         print(f"\n=== {title} ===", flush=True)
-        subprocess.run([sys.executable, str(ROOT / script)], check=True, cwd=ROOT)
+        result = subprocess.run([sys.executable, str(ROOT / script)], cwd=ROOT)
+        if result.returncode != 0:
+            sys.exit(result.returncode)   # the step has already printed what went wrong
     print("\nDone. See reports/data_quality.md")

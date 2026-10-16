@@ -55,8 +55,9 @@ def load_key() -> str | None:
 
 
 class Ceda:
-    def __init__(self, key: str, session: requests.Session | None = None, pause: float = 0.4):
+    def __init__(self, key: str, session: requests.Session | None = None, pause: float = 0.4, verbose: bool = False):
         self.http = session or requests.Session()
+        self.verbose = verbose
         self.http.headers.update({"Authorization": f"Bearer {key}"})
         self.pause = pause
         self._geo = None
@@ -67,15 +68,28 @@ class Ceda:
     # -- transport --------------------------------------------------------------
     def call(self, method: str, path: str, body: dict | None = None, retries: int = 5) -> list:
         for attempt in range(retries + 1):
+            t0 = time.time()
+            if self.verbose:
+                print(f"    -> {method} {path} ...", end="", flush=True)
             try:
-                r = self.http.request(method, BASE_URL + path, json=body, timeout=120)
+                r = self.http.request(method, BASE_URL + path, json=body, timeout=(15, 90))
             except requests.RequestException as e:
+                if self.verbose:
+                    print(f" failed after {time.time() - t0:.0f}s ({type(e).__name__})", flush=True)
                 if attempt == retries:
                     raise RuntimeError(f"Network error calling CEDA {path}: {e}") from e
                 time.sleep(2 * (attempt + 1))
                 continue
+            if self.verbose:
+                try:
+                    n = len(r.json().get("output", {}).get("data") or []) if r.status_code == 200 else 0
+                except ValueError:
+                    n = 0
+                print(f" HTTP {r.status_code} in {time.time() - t0:.1f}s" + (f", {n:,} rows" if n else ""), flush=True)
             if r.status_code == 429 and attempt < retries:
-                time.sleep(float(r.headers.get("Retry-After", 2 * (attempt + 1))))
+                wait = float(r.headers.get("Retry-After", 5 * (attempt + 1)))
+                print(f"    rate limited by CEDA, waiting {wait:.0f}s", flush=True)
+                time.sleep(wait)
                 continue
             if r.status_code in (401, 403):
                 raise SystemExit("CEDA rejected the API key (HTTP %d). Check CEDA_API_KEY." % r.status_code)
@@ -198,13 +212,15 @@ def main() -> None:
     ap.add_argument("--to", dest="end", default=dt.date.today().isoformat(), help="YYYY-MM-DD (default today)")
     ap.add_argument("--list-commodities", action="store_true")
     ap.add_argument("--overwrite", action="store_true", help="re-download files that already exist")
+    ap.add_argument("--quiet", action="store_true", help="don't print every API request")
     args = ap.parse_args()
 
     key = load_key()
     if not key:
         sys.exit("No CEDA API key found. Get one free at https://api.ceda.ashoka.edu.in, then set CEDA_API_KEY "
                  "or put CEDA_API_KEY=... in a .env file in the project folder.")
-    api = Ceda(key)
+    api = Ceda(key, verbose=not args.quiet)
+    print("Connecting to the CEDA API ...", flush=True)
     if args.list_commodities:
         print(api.commodities().sort_values("commodity_name").to_string(index=False))
         return
@@ -220,6 +236,7 @@ def main() -> None:
                 if path.exists() and not args.overwrite:
                     print(f"  {path.name:<40} already downloaded")
                     continue
+                print(f"  {commodity} / {state} / {year}", flush=True)
                 y0 = max(start, pd.Timestamp(f"{year}-01-01")).date().isoformat()
                 y1 = min(end, pd.Timestamp(f"{year}-12-31")).date().isoformat()
                 df = fetch_year(api, commodity, state, year, y0, y1)

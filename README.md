@@ -22,7 +22,7 @@ MandiPulse uses six years of daily mandi prices to answer:
 
 ## Data
 
-Real prices reported daily by APMC markets to **Agmarknet**, the Government of India's agricultural marketing network, obtained through the [CEDA Agri-Market portal](DATA.md#option-a-recommended-ceda-agri-market-data-ashoka-university), Agmarknet reports and the data.gov.in API.
+Real prices reported daily by APMC markets to **Agmarknet**, the Government of India's agricultural marketing network, downloaded through the [CEDA Agri Market API](DATA.md#option-a-recommended-the-ceda-agri-market-api-ashoka-university) (Ashoka University), with Agmarknet reports and the data.gov.in API as alternatives.
 
 | | |
 |---|---|
@@ -64,7 +64,7 @@ data/raw/{ceda,agmarknet,datagov}/  ──►  src/ingest.py  ──►  sql/00_
 
 | Phase | What | Status |
 |---|---|---|
-| 0 | Repo, data sources, download guide, data.gov.in fetch script | ✅ Done |
+| 0 | Repo, data sources, download guide, CEDA API and data.gov.in download scripts | ✅ Done |
 | 1 | Ingestion, SQL cleaning, star schema, data quality report, tests | ✅ Done |
 | 2 | Seasonality, supply vs price, volatility and price shocks, mandi-to-mandi price gaps | Next |
 | 3 | Hold-or-sell simulator, best-market finder, onion export ban event study | |
@@ -81,9 +81,9 @@ python -m venv .venv
 .venv\Scripts\activate          # Windows; on macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
 
-# put the downloaded files in data/raw/ (see DATA.md), then:
+python src/fetch_ceda.py        # download the data (needs a free CEDA API key, see DATA.md)
 python run_all.py               # ingest -> clean -> warehouse -> coverage tables -> quality report
-pytest -q                       # 17 tests: every source format and every cleaning rule
+pytest -q                       # 22 tests: downloader, every source format and every cleaning rule
 ```
 
 The tests run without any downloaded data: they generate small, deliberately messy files in each source format (renamed markets, duplicates, ₹/kg slips, spikes, HTML-as-Excel) and check that every cleaning rule handles them.
@@ -102,8 +102,9 @@ The tests run without any downloaded data: they generate small, deliberately mes
 │   ├── config.py            # scope: crops, states, dates, anchor markets
 │   ├── ingest.py            # reads every source format into one schema
 │   ├── build_warehouse.py   # runs the SQL in DuckDB, writes the quality report
+│   ├── fetch_ceda.py        # downloads daily market-level prices from the CEDA API
 │   └── fetch_datagov.py     # downloads recent days from the data.gov.in API
-├── tests/                   # pytest: ingestion + every cleaning rule
+├── tests/                   # pytest: downloader (mocked API), ingestion, every cleaning rule
 ├── reports/                 # data_quality.md (generated)
 ├── DATA.md                  # how to get the data
 └── run_all.py               # one-command pipeline

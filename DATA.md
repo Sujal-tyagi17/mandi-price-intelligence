@@ -13,15 +13,33 @@ they are downloaded; put them in `data/raw/` and run `python run_all.py`.
 | Period | 1 January 2019 to the latest available date |
 | Fields needed | date, state, district, market, commodity, variety, min / max / modal price, arrivals (if available) |
 
-## Option A (recommended): CEDA Agri-Market Data, Ashoka University
+## Option A (recommended): the CEDA Agri Market API, Ashoka University
 
-CEDA republishes Agmarknet's daily prices and arrivals in a cleaner, downloadable form.
+CEDA republishes Agmarknet's daily, market-level prices from 2000 onwards (the latest months lag by a
+few months). The API is free and the download script does everything:
 
-1. Open the CEDA Agri-Market portal (search "CEDA Agmarknet Ashoka") and create a free account.
-2. Choose **Onion**, select the six states (or one state at a time if the portal limits the size),
-   set the date range to **2019-01-01 → latest**, and download the **daily, market-level** data as CSV.
-3. Repeat for **Tomato** and **Potato**.
-4. Save the files in `data/raw/ceda/`. File names don't matter.
+1. Open <https://api.ceda.ashoka.edu.in>, enter your email, type the 6-digit OTP and click
+   **Verify & Generate Key**.
+2. Create a file called `.env` in the project folder containing one line (it is git-ignored, so the
+   key is never pushed):
+
+   ```
+   CEDA_API_KEY=your-key-here
+   ```
+
+3. Run:
+
+   ```powershell
+   python src/fetch_ceda.py                       # 3 crops x 6 states, 2019 -> today
+   python src/fetch_ceda.py --commodity Onion --state Maharashtra   # or a smaller test first
+   ```
+
+   Files are saved one crop, state and year at a time in `data/raw/ceda/`, and anything already
+   downloaded is skipped, so an interrupted run can just be started again.
+
+You can also download CSVs by hand from the CEDA portal (agmarknet.ceda.ashoka.edu.in): choose
+**Daily** frequency and a single state or district so the file has one row per mandi, and save it in
+`data/raw/ceda/`.
 
 ## Option B: Agmarknet price and arrival reports
 

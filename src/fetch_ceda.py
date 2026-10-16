@@ -20,12 +20,13 @@ How it works: the API is id-based (commodity_id, state_id, district_id). Asking 
 state returns one state-average series, so the script asks for each district of the state,
 which returns one row per mandi per day.
 
-The free API has a tight request quota, so the script keeps requests to a minimum:
-  * each district is first asked for the whole period in one request; only districts that
-    are too slow are split into calendar years (and then halves of years);
-  * every answer is cached in data/interim/ceda_cache/, so if CEDA pauses the run
-    (HTTP 429) or you press Ctrl+C, running the same command again continues where it stopped
-    without repeating any request.
+The free API allows 40 requests an hour, so the script keeps requests to a minimum:
+  * each district is asked for the whole period in one request. A slow district is asked one
+    year at a time, and a district too slow even for one year (Nashik for onion) one mandi at a time;
+  * it reads CEDA's quota headers and waits for the next hour instead of wasting requests;
+  * every answer is cached in data/interim/ceda_cache/, so stopping (Ctrl+C) and running the same
+    command again continues where it stopped without repeating any request. Pieces CEDA could not
+    deliver are listed and retried on the next run; they never stop the download.
 
 Output: data/raw/ceda/<commodity>_<state>_<year>.csv, read automatically by src/ingest.py.
 """
@@ -92,6 +93,9 @@ class Ceda:
         self._geo = None
         self._commodities = None
         self.quantity_path: str | None = "unknown"
+        self.heavy: set[tuple[int, int, int]] = set()      # districts asked one mandi at a time
+        self.failed: list[tuple] = []                       # pieces that failed this run
+        self.skip_arrivals = False
 
     # -- cache ------------------------------------------------------------------------
     def _cache_get(self, key: str):
@@ -135,21 +139,16 @@ class Ceda:
                 attempt += 1
                 time.sleep(5 * attempt)
                 continue
+            remaining = r.headers.get("RateLimit-Remaining")
             if self.verbose:
                 try:
                     n = len(r.json().get("output", {}).get("data") or []) if r.status_code == 200 else 0
                 except ValueError:
                     n = 0
-                print(f" HTTP {r.status_code} in {time.time() - t0:.1f}s" + (f", {n:,} rows" if n else ""), flush=True)
+                print(f" HTTP {r.status_code} in {time.time() - t0:.1f}s" + (f", {n:,} rows" if n else "")
+                      + (f"  [{remaining} requests left this hour]" if remaining is not None else ""), flush=True)
             if r.status_code == 429:                       # quota used up: wait, then carry on
-                wait = float(r.headers.get("Retry-After") or 60)
-                limits = {k: v for k, v in r.headers.items() if "limit" in k.lower() or "remaining" in k.lower()}
-                resume = (dt.datetime.now() + dt.timedelta(seconds=wait)).strftime("%H:%M")
-                print(f"    CEDA request limit reached after {self.requests_made} requests"
-                      + (f" {limits}" if limits else "") + f". Waiting until about {resume}.\n"
-                      "    (Everything so far is saved: you can also press Ctrl+C and run the same command later.)",
-                      flush=True)
-                time.sleep(wait + 1)
+                self._wait_for_quota(r)
                 continue
             if r.status_code in (401, 403):
                 raise SystemExit("CEDA rejected the API key (HTTP %d). Check CEDA_API_KEY; keys expire after "
@@ -164,8 +163,22 @@ class Ceda:
             out = r.json().get("output", {})
             if out.get("type") != "success":
                 raise RuntimeError(f"CEDA {path}: {out.get('message', 'unknown error')}")
-            time.sleep(self.pause)  # be polite to a free, shared API
+            if remaining is not None and remaining.isdigit() and int(remaining) == 0:
+                self._wait_for_quota(r)              # don't spend a request just to be told to wait
+            else:
+                time.sleep(self.pause)               # be polite to a free, shared API
             return out.get("data", []) or []
+
+    def _wait_for_quota(self, r) -> None:
+        h = r.headers
+        wait = float(h.get("Retry-After") or h.get("RateLimit-Reset") or 60)
+        resume = (dt.datetime.now() + dt.timedelta(seconds=wait)).strftime("%H:%M")
+        limit = h.get("RateLimit-Limit")
+        print(f"    CEDA allows {limit + ' requests' if limit else 'only so many requests'} an hour; used up "
+              f"({self.requests_made} made so far). Waiting until about {resume}.\n"
+              "    (Everything so far is saved: you can also press Ctrl+C and run the same command later.)",
+              flush=True)
+        time.sleep(wait + 2)
 
     # -- reference data -----------------------------------------------------------------
     def commodities(self) -> pd.DataFrame:
@@ -202,28 +215,92 @@ class Ceda:
         return {int(m["market_id"]): m["market_name"] for m in data}
 
     # -- data -----------------------------------------------------------------------------
-    def ranged(self, path: str, commodity_id: int, state_id: int, district_id: int, start: str, end: str) -> list:
-        """Rows for one district and date range; ranges CEDA is too slow for are split and retried."""
-        key = f"{path.rsplit('/', 1)[-1]}_{commodity_id}_{state_id}_{district_id}_{start}_{end}"
+    # Most districts answer a whole-period request in seconds. A few big ones (Nashik for onion)
+    # make CEDA time out even for a few weeks, so once a district is slow for a single year it is
+    # asked one mandi at a time instead. Anything that still fails is recorded, the run carries on,
+    # and the next run retries only what is missing.
+    def _key(self, path, commodity_id, state_id, district_id, start, end, market_id=None) -> str:
+        return (f"{path.rsplit('/', 1)[-1]}_{commodity_id}_{state_id}_{district_id}"
+                + (f"_m{market_id}" if market_id else "") + f"_{start}_{end}")
+
+    def attempt(self, path, commodity_id, state_id, district_id, start, end, market_id=None):
+        """One request (cached). Returns the rows, or None if CEDA was too slow (remembered for next time)."""
+        key = self._key(path, commodity_id, state_id, district_id, start, end, market_id)
         hit = self._cache_get(key)
-        if hit is not None and hit != SLOW:
+        if hit == SLOW:
+            return None
+        if hit is not None:
             return hit
-        pieces = split_range(start, end)
-        if hit != SLOW:
-            body = {"commodity_id": commodity_id, "state_id": state_id, "district_id": [district_id],
-                    "from_date": start, "to_date": end}
-            try:
-                rows = self.call("POST", path, body, retries=0 if pieces else 2)
-                self._cache_put(key, rows)
-                return rows
-            except Slow as e:
-                if not pieces:
-                    raise RuntimeError(f"CEDA could not return {path} for district {district_id} "
-                                       f"{start}..{end} ({e}). Try again later.") from e
-                self._cache_put(key, SLOW)
-        if self.verbose:
-            print(f"    too slow for {start}..{end}, asking in {len(pieces)} smaller pieces", flush=True)
-        return [row for a, b in pieces for row in self.ranged(path, commodity_id, state_id, district_id, a, b)]
+        body = {"commodity_id": commodity_id, "state_id": state_id, "district_id": [district_id],
+                "from_date": start, "to_date": end}
+        if market_id:
+            body["market_id"] = [market_id]
+        try:
+            rows = self.call("POST", path, body, retries=0)
+        except Slow:
+            self._cache_put(key, SLOW)
+            return None
+        self._cache_put(key, rows)
+        return rows
+
+    def ranged(self, path: str, commodity_id: int, state_id: int, district_id: int, start: str, end: str,
+               market_id: int | None = None) -> list:
+        """Rows for one district (or one mandi) and date range, using as few requests as possible:
+        1. the whole range in one request;
+        2. if too slow: for a mandi, one request per calendar year; for a district, try its first
+           year on its own, and if even that is too slow, switch to one mandi at a time;
+        3. a piece that still fails is recorded and retried on the next run."""
+        ids = (commodity_id, state_id, district_id)
+        if market_id is None and self.is_heavy(*ids):
+            return self.by_market(path, *ids, start, end)
+        rows = self.attempt(path, *ids, start, end, market_id)
+        if rows is not None:
+            return rows
+        years = split_range(start, end) if pd.Timestamp(start).year != pd.Timestamp(end).year else []
+        if market_id is not None:
+            if years:
+                return [r for y0, y1 in years for r in self.ranged(path, *ids, y0, y1, market_id)]
+            self._fail(path, ids, market_id, start, end)
+            return []
+        if years:
+            first = self.attempt(path, *ids, *years[0])
+            if first is not None:
+                if self.verbose:
+                    print(f"    too slow for {start}..{end}, asking one year at a time", flush=True)
+                return first + [r for y0, y1 in years[1:] for r in self.ranged(path, *ids, y0, y1)]
+        print(f"    district {district_id} is too slow even for a single year: asking one mandi at a time",
+              flush=True)
+        self.heavy.add(ids)
+        self._cache_put("heavy_{}_{}_{}".format(*ids), True)
+        return self.by_market(path, *ids, start, end)
+
+    def _fail(self, path, ids, market_id, start, end) -> None:
+        name = path.rsplit("/", 1)[-1]
+        self.failed.append((name, ids[2], market_id, start, end))
+        print(f"    could not get {name} for district {ids[2]}" + (f" mandi {market_id}" if market_id else "")
+              + f" {start}..{end}; will retry on the next run", flush=True)
+        if self.cache_dir is not None:      # forget the 'too slow' note so the next run asks again
+            (self.cache_dir / f"{self._key(path, *ids, start, end, market_id)}.json").unlink(missing_ok=True)
+
+    def is_heavy(self, commodity_id: int, state_id: int, district_id: int) -> bool:
+        if (commodity_id, state_id, district_id) not in self.heavy and \
+                self._cache_get(f"heavy_{commodity_id}_{state_id}_{district_id}"):
+            self.heavy.add((commodity_id, state_id, district_id))
+        return (commodity_id, state_id, district_id) in self.heavy
+
+    def by_market(self, path: str, commodity_id: int, state_id: int, district_id: int, start: str, end: str) -> list:
+        rows = []
+        for i, m in enumerate(sorted(self.market_names(commodity_id, state_id, district_id))):
+            failed_before = len(self.failed)
+            got = self.ranged(path, commodity_id, state_id, district_id, start, end, market_id=m)
+            if any(r.get("market_id") not in (None, m) for r in got):
+                return got          # CEDA ignored the mandi filter and sent the whole district: that's all of it
+            if i == 0 and not got and len(self.failed) > failed_before:
+                # even one mandi fails: CEDA is struggling with this district right now, so stop spending
+                # requests on it; the next run retries
+                return []
+            rows += got
+        return rows
 
     def prices(self, commodity_id: int, state_id: int, district_id: int, start: str, end: str) -> list:
         return self.ranged(PRICE_PATH, commodity_id, state_id, district_id, start, end)
@@ -250,6 +327,8 @@ class Ceda:
         return self.quantity_path
 
     def quantities(self, commodity_id: int, state_id: int, district_id: int, start: str, end: str) -> list:
+        if self.skip_arrivals:
+            return []
         path = self.find_quantity_path(commodity_id, state_id, district_id, start)
         if not path:
             return []
@@ -304,20 +383,26 @@ def file_for(out_dir: Path, commodity: str, state: str, year: int) -> Path:
     return out_dir / f"{commodity.lower()}_{state.lower().replace(' ', '-')}_{year}.csv"
 
 
+def _marker(commodity: str, state: str) -> str:
+    return f"incomplete_{commodity.lower()}_{state.lower().replace(' ', '-')}"
+
+
 def download(api: Ceda, commodities, states, start: pd.Timestamp, end: pd.Timestamp, out_dir: Path,
              overwrite: bool = False) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     total = 0
     for commodity in commodities:
         for state in states:
+            incomplete = api._cache_get(_marker(commodity, state)) is not None
             years = [y for y in range(start.year, end.year + 1)
-                     if overwrite or not file_for(out_dir, commodity, state, y).exists()]
+                     if overwrite or incomplete or not file_for(out_dir, commodity, state, y).exists()]
             if not years:
                 print(f"  {commodity} / {state}: already downloaded")
                 continue
             a = max(start, pd.Timestamp(f"{years[0]}-01-01")).date().isoformat()
             b = min(end, pd.Timestamp(f"{years[-1]}-12-31")).date().isoformat()
             print(f"\n{commodity} / {state}  {a} to {b}", flush=True)
+            failed_before = len(api.failed)
             df = fetch(api, commodity, state, a, b)
             for y in years:
                 part = df[df.date.str[:4] == str(y)] if not df.empty else df
@@ -328,6 +413,12 @@ def download(api: Ceda, commodities, states, start: pd.Timestamp, end: pd.Timest
                 part.to_csv(path, index=False)
                 total += len(part)
                 print(f"  {path.name:<40} {len(part):>7,} rows, {part.market.nunique():>3} markets")
+            if len(api.failed) > failed_before:
+                api._cache_put(_marker(commodity, state), api.failed[failed_before:])
+                print(f"  {commodity} / {state}: saved, but {len(api.failed) - failed_before} piece(s) failed; "
+                      "the next run will retry them", flush=True)
+            elif incomplete and api.cache_dir is not None:
+                (api.cache_dir / f"{_marker(commodity, state)}.json").unlink(missing_ok=True)
     return total
 
 
@@ -336,10 +427,13 @@ def main() -> None:
     ap.add_argument("--commodity", action="append", help="repeatable; default: Onion, Tomato, Potato")
     ap.add_argument("--state", action="append", help="repeatable; default: the 6 project states")
     ap.add_argument("--from", dest="start", default=START_DATE, help="YYYY-MM-DD (default %(default)s)")
-    ap.add_argument("--to", dest="end", default=dt.date.today().isoformat(), help="YYYY-MM-DD (default today)")
+    # a fixed default end date (end of this year) keeps cached requests valid from one day to the next
+    ap.add_argument("--to", dest="end", default=f"{dt.date.today().year}-12-31", help="YYYY-MM-DD (default: end of this year)")
     ap.add_argument("--list-commodities", action="store_true")
     ap.add_argument("--overwrite", action="store_true", help="re-write files that already exist")
     ap.add_argument("--quiet", action="store_true", help="don't print every API request")
+    ap.add_argument("--skip-arrivals", action="store_true",
+                    help="prices only: about a third fewer requests, but no arrival quantities")
     args = ap.parse_args()
 
     key = load_key()
@@ -347,6 +441,7 @@ def main() -> None:
         sys.exit("No CEDA API key found. Get one free at https://api.ceda.ashoka.edu.in, then set CEDA_API_KEY "
                  "or put CEDA_API_KEY=... in a .env file in the project folder.")
     api = Ceda(key, verbose=not args.quiet, cache_dir=CACHE_DIR)
+    api.skip_arrivals = args.skip_arrivals
     print("Connecting to the CEDA API ...", flush=True)
     if args.list_commodities:
         print(api.commodities().sort_values("commodity_name").to_string(index=False))
@@ -358,8 +453,12 @@ def main() -> None:
                          pd.Timestamp(args.start), pd.Timestamp(args.end), out_dir, args.overwrite)
     except KeyboardInterrupt:
         sys.exit("\nStopped. Everything downloaded so far is saved; run the same command again to continue.")
-    print(f"\nDone: {total:,} new rows in {out_dir} ({api.requests_made} API requests). "
-          "Next: python run_all.py")
+    print(f"\nDone: {total:,} new rows in {out_dir} ({api.requests_made} API requests).")
+    if api.failed:
+        print(f"{len(api.failed)} piece(s) could not be downloaded this time (CEDA timed out). Run the same command "
+              "again later to retry just those; everything else is saved.")
+    else:
+        print("Next: python run_all.py")
 
 
 if __name__ == "__main__":

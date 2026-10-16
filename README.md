@@ -4,7 +4,7 @@
 
 `SQL (DuckDB)` · `Python (pandas, numpy)` · `Streamlit` · `Plotly` · `Agmarknet open data via the CEDA API` · `pytest`
 
-> **Status: Phases 0–5 built and tested; real-data results and the live dashboard (Phase 6) come next.** All the code runs end to end and is covered by 39 tests on generated test data. The findings will be written up from the real download, so this README quotes no results yet. See the [roadmap](#roadmap).
+> **Status: Phases 0–5 built and tested; real-data results and the live dashboard (Phase 6) come next.** All the code runs end to end and is covered by 42 tests on generated test data. The findings will be written up from the real download, so this README quotes no results yet. See the [roadmap](#roadmap).
 
 ---
 

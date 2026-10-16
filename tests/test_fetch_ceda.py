@@ -48,7 +48,7 @@ class FakeCeda:
         if path == "/agmarknet/prices":
             rows = []
             for d, (dist, mkt) in enumerate([(516, 1001), (516, 1002), (521, 2001)]):
-                if dist in json["district_id"]:
+                if dist in json["district_id"] and mkt in json.get("market_id", [mkt]):
                     for day in ["2024-01-01T00:00:00", "2024-01-02T00:00:00"]:
                         rows.append({"date": day, "commodity_id": 23, "census_state_id": 27,
                                      "census_district_id": dist, "market_id": mkt,
@@ -107,28 +107,30 @@ def test_key_read_from_env_file(tmp_path, monkeypatch):
 
 
 class SlowCeda(FakeCeda):
-    """Times out whenever Nashik (a big onion district) is asked for more than ~2 months at once."""
+    """Times out whenever Nashik (a big onion district) is asked for more than a year at once."""
 
     def request(self, method, url, json=None, timeout=None):
         import requests
         if url.endswith("/agmarknet/prices"):
             span = (pd.Timestamp(json["to_date"]) - pd.Timestamp(json["from_date"])).days
-            if 516 in json["district_id"] and span > 62:
+            if 516 in json["district_id"] and span > 366:
                 self.calls.append((method, "TIMEOUT", json))
                 raise requests.ReadTimeout("too slow")
         return super().request(method, url, json, timeout)
 
 
-def test_slow_requests_are_split_until_they_succeed():
+def test_slow_requests_are_split_into_years():
     fake = SlowCeda()
     api = fetch_ceda.Ceda("key", session=fake, pause=0)
-    df = fetch_ceda.fetch(api, "Onion", "Maharashtra", "2024-01-01", "2024-12-31")
+    df = fetch_ceda.fetch(api, "Onion", "Maharashtra", "2022-01-01", "2024-12-31")
     assert set(df.market) == {"Lasalgaon", "Pimpalgaon", "Pune"}
     ok = [b for _, p, b in fake.calls if p == "/agmarknet/prices"]
     assert all(len(b["district_id"]) == 1 for b in ok)
     assert any(c[1] == "TIMEOUT" for c in fake.calls)
     pune = [b for b in ok if b["district_id"] == [521]]
     assert len(pune) == 1                                   # fast district: one request for the whole range
+    nashik = sorted(b["from_date"] for b in ok if b["district_id"] == [516])
+    assert nashik == ["2022-01-01", "2023-01-01", "2024-01-01"]
 
 
 def test_whole_period_asked_in_one_request_per_district():
@@ -151,12 +153,12 @@ def test_split_range():
 def test_rerun_uses_cache_and_skips_slow_requests(tmp_path):
     first = SlowCeda()
     api = fetch_ceda.Ceda("key", session=first, pause=0, cache_dir=tmp_path / "cache")
-    df1 = fetch_ceda.fetch(api, "Onion", "Maharashtra", "2024-01-01", "2024-12-31")
+    df1 = fetch_ceda.fetch(api, "Onion", "Maharashtra", "2022-01-01", "2024-12-31")
     assert any(c[1] == "TIMEOUT" for c in first.calls)
 
     again = SlowCeda()                                      # e.g. the run was stopped by a rate limit
     api2 = fetch_ceda.Ceda("key", session=again, pause=0, cache_dir=tmp_path / "cache")
-    df2 = fetch_ceda.fetch(api2, "Onion", "Maharashtra", "2024-01-01", "2024-12-31")
+    df2 = fetch_ceda.fetch(api2, "Onion", "Maharashtra", "2022-01-01", "2024-12-31")
     assert again.calls == []                                # nothing asked twice, no repeated timeouts
     pd.testing.assert_frame_equal(df1, df2)
 
@@ -179,7 +181,7 @@ def test_rate_limit_waits_and_continues(monkeypatch):
     monkeypatch.setattr(fetch_ceda.time, "sleep", slept.append)
     api = fetch_ceda.Ceda("key", session=Limited(), pause=0)
     df = fetch_ceda.fetch(api, "Onion", "Maharashtra", "2024-01-01", "2024-12-31")
-    assert len(df) == 6 and 4 in slept
+    assert len(df) == 6 and 5 in slept
 
 
 def test_download_writes_one_file_per_year(tmp_path):
@@ -189,3 +191,64 @@ def test_download_writes_one_file_per_year(tmp_path):
     assert n == 6
     assert (tmp_path / "onion_maharashtra_2024.csv").exists()
     assert not (tmp_path / "onion_maharashtra_2023.csv").exists()     # fake has no 2023 rows
+
+
+class HeavyCeda(FakeCeda):
+    """Nashik (516) always times out unless a single mandi is asked for; `broken` districts always time out."""
+
+    def __init__(self, broken=(), **kw):
+        super().__init__(**kw)
+        self.broken = set(broken)
+
+    def request(self, method, url, json=None, timeout=None):
+        import requests
+        if url.endswith("/agmarknet/prices"):
+            d = json["district_id"][0]
+            if d in self.broken or (d == 516 and "market_id" not in json):
+                self.calls.append((method, "TIMEOUT", json))
+                raise requests.ReadTimeout("too slow")
+        return super().request(method, url, json, timeout)
+
+
+def test_heavy_district_is_fetched_one_mandi_at_a_time(tmp_path):
+    fake = HeavyCeda()
+    api = fetch_ceda.Ceda("key", session=fake, pause=0, cache_dir=tmp_path)
+    df = fetch_ceda.fetch(api, "Onion", "Maharashtra", "2019-01-01", "2024-12-31")
+    assert set(df.market) == {"Lasalgaon", "Pimpalgaon", "Pune"} and len(df) == 6
+    per_mandi = [b for _, p, b in fake.calls if p == "/agmarknet/prices" and "market_id" in b]
+    assert {b["market_id"][0] for b in per_mandi} == {1001, 1002}
+    # once known to be heavy, a rerun goes straight to per-mandi requests (all cached here: no calls at all)
+    again = HeavyCeda()
+    fetch_ceda.fetch(fetch_ceda.Ceda("key", session=again, pause=0, cache_dir=tmp_path),
+                     "Onion", "Maharashtra", "2019-01-01", "2024-12-31")
+    assert again.calls == []
+
+
+def test_failures_do_not_stop_the_run_and_are_retried(tmp_path, monkeypatch):
+    out, cache = tmp_path / "out", tmp_path / "cache"
+    monkeypatch.setattr(fetch_ceda.time, "sleep", lambda s: None)
+    api = fetch_ceda.Ceda("key", session=HeavyCeda(broken={516}), pause=0, cache_dir=cache)
+    fetch_ceda.download(api, ["Onion"], ["Maharashtra"], pd.Timestamp("2024-01-01"), pd.Timestamp("2024-12-31"), out)
+    first = pd.read_csv(out / "onion_maharashtra_2024.csv")
+    assert set(first.market) == {"Pune"} and api.failed                 # Nashik missing, run finished
+    assert (cache / "incomplete_onion_maharashtra.json").exists()
+
+    healthy = fetch_ceda.Ceda("key", session=FakeCeda(), pause=0, cache_dir=cache)
+    fetch_ceda.download(healthy, ["Onion"], ["Maharashtra"], pd.Timestamp("2024-01-01"),
+                        pd.Timestamp("2024-12-31"), out)
+    assert set(pd.read_csv(out / "onion_maharashtra_2024.csv").market) == {"Lasalgaon", "Pimpalgaon", "Pune"}
+    assert not (cache / "incomplete_onion_maharashtra.json").exists()
+
+
+def test_waits_when_quota_header_says_none_left(monkeypatch):
+    class LastRequest(FakeCeda):
+        def request(self, method, url, json=None, timeout=None):
+            r = super().request(method, url, json, timeout)
+            r.headers = {"RateLimit-Remaining": "0", "RateLimit-Reset": "120", "RateLimit-Limit": "40"}
+            return r
+
+    slept = []
+    monkeypatch.setattr(fetch_ceda.time, "sleep", slept.append)
+    api = fetch_ceda.Ceda("key", session=LastRequest(), pause=0)
+    api.commodities()
+    assert slept == [122]

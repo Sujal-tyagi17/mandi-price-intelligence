@@ -36,11 +36,12 @@ few months). The API is free and the download script does everything:
 
    Files are saved one crop, state and year at a time in `data/raw/ceda/`.
 
-   The free API allows only a limited number of requests per hour. When the limit is reached the
-   script says so and waits until CEDA lets it continue. Every answer is cached in
-   `data/interim/ceda_cache/`, so you can also press Ctrl+C and run the same command later: it
-   carries on where it stopped without repeating any request. The full download can take a few
-   sessions.
+   The free API allows **40 requests an hour**, so the full download takes about a day or two of running
+   (onion first, then tomato, then potato). When the hour's quota is used up the script waits for the
+   next hour by itself. Every answer is cached in `data/interim/ceda_cache/`, so you can press Ctrl+C at
+   any time and run the same command later: it continues where it stopped without repeating a request.
+   If CEDA times out on a piece, the script notes it, carries on, and retries it on the next run.
+   `--skip-arrivals` saves about a third of the requests but leaves out arrival quantities.
 
 You can also download CSVs by hand from the CEDA portal (agmarknet.ceda.ashoka.edu.in): choose
 **Daily** frequency and a single state or district so the file has one row per mandi, and save it in

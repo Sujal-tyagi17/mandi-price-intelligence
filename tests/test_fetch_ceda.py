@@ -57,8 +57,8 @@ class FakeCeda:
                          "min_price": 1, "max_price": 2, "modal_price": 1.5})   # state aggregate row
             return FakeResponse(rows)
         if path == "/agmarknet/quantities" and self.with_quantities:
-            return FakeResponse([{"date": "2024-01-01T00:00:00", "census_district_id": 516, "market_id": 1001,
-                                  "quantity": 950.0}])
+            rows = [{"date": "2024-01-01T00:00:00", "census_district_id": 516, "market_id": 1001, "quantity": 950.0}]
+            return FakeResponse([r for r in rows if r["census_district_id"] in json["district_id"]])
         return FakeResponse([], status=404)
 
 
@@ -84,8 +84,8 @@ def test_requests_every_district_of_the_state():
     api = fetch_ceda.Ceda("key", session=fake, pause=0)
     fetch_ceda.fetch_year(api, "Onion", "Maharashtra", 2024, "2024-01-01", "2024-12-31")
     price_calls = [body for _, path, body in fake.calls if path == "/agmarknet/prices"]
-    assert price_calls[0]["district_id"] == [516, 521]
-    assert price_calls[0]["from_date"] == "2024-01-01"
+    assert sorted(d for b in price_calls for d in b["district_id"]) == [516, 521]
+    assert all(b["from_date"] == "2024-01-01" for b in price_calls)
 
 
 def test_output_is_read_by_ingest(tmp_path):

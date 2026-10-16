@@ -193,7 +193,7 @@ def fetch_year(api: Ceda, commodity: str, state: str, year: int, start: str, end
         rows += api.prices(cid, sid, district_ids[i:i + CHUNK], start, end)
     if not rows:
         return pd.DataFrame()
-    df = pd.DataFrame(rows)
+    df = pd.DataFrame(rows).drop_duplicates()
     df = df[df.get("market_id").notna()] if "market_id" in df else df.iloc[0:0]
     if df.empty:
         return df
@@ -218,7 +218,7 @@ def fetch_year(api: Ceda, commodity: str, state: str, year: int, start: str, end
         q = pd.DataFrame(qty)
         field = next((f for f in QUANTITY_FIELDS if f in q.columns), None)
         if field and "market_id" in q:
-            q = q[q.market_id.notna()]
+            q = q[q.market_id.notna()].drop_duplicates()
             q = q.assign(date=q["date"].astype(str).str[:10], market_id=q.market_id.astype(int))
             q = q.groupby(["date", "market_id"], as_index=False)[field].sum().rename(columns={field: "arrivals_tonnes"})
             out = out.merge(q, on=["date", "market_id"], how="left")

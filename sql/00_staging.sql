@@ -194,3 +194,16 @@ SELECT * FROM (VALUES
     (14, 'Clean price reports', (SELECT count(*) FROM fact_price_report WHERE NOT flag_outlier)),
     (15, 'Market-crop-days in the analysis table', (SELECT count(*) FROM fact_market_day))
 ) t(step, check_name, rows_affected);
+
+-- ---------- 9. markets reliable enough for time-series analysis ------------------
+-- At least a year of history and prices on at least 60% of the days in that span.
+CREATE OR REPLACE TABLE analysis_markets AS
+SELECT state, market, commodity,
+       min(price_date) AS first_report, max(price_date) AS last_report,
+       count(*) AS days_reported,
+       round(100.0 * count(*) / (date_diff('day', min(price_date), max(price_date)) + 1), 1) AS coverage_pct,
+       sum(arrivals_tonnes) AS total_arrivals_tonnes
+FROM fact_market_day
+GROUP BY ALL
+HAVING count(*) >= 365
+   AND 100.0 * count(*) / (date_diff('day', min(price_date), max(price_date)) + 1) >= 60;

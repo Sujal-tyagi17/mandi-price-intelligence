@@ -358,7 +358,7 @@ def main() -> None:
                          pd.Timestamp(args.start), pd.Timestamp(args.end), out_dir, args.overwrite)
     except KeyboardInterrupt:
         sys.exit("\nStopped. Everything downloaded so far is saved; run the same command again to continue.")
-    print(f"\nDone: {total:,} new rows in {out_dir.relative_to(ROOT)} ({api.requests_made} API requests). "
+    print(f"\nDone: {total:,} new rows in {out_dir} ({api.requests_made} API requests). "
           "Next: python run_all.py")
 
 

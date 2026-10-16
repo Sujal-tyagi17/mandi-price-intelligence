@@ -1,5 +1,5 @@
 -- How complete is each market's price history? Used to choose markets reliable enough for
--- time-series analysis (Phase 2 uses markets reporting on at least 60% of days).
+-- time-series analysis (the same rule builds analysis_markets in 00_staging.sql).
 WITH span AS (
     SELECT state, market, commodity,
            min(price_date) AS first_report, max(price_date) AS last_report,

@@ -34,8 +34,13 @@ few months). The API is free and the download script does everything:
    python src/fetch_ceda.py --commodity Onion --state Maharashtra   # or a smaller test first
    ```
 
-   Files are saved one crop, state and year at a time in `data/raw/ceda/`, and anything already
-   downloaded is skipped, so an interrupted run can just be started again.
+   Files are saved one crop, state and year at a time in `data/raw/ceda/`.
+
+   The free API allows only a limited number of requests per hour. When the limit is reached the
+   script says so and waits until CEDA lets it continue. Every answer is cached in
+   `data/interim/ceda_cache/`, so you can also press Ctrl+C and run the same command later: it
+   carries on where it stopped without repeating any request. The full download can take a few
+   sessions.
 
 You can also download CSVs by hand from the CEDA portal (agmarknet.ceda.ashoka.edu.in): choose
 **Daily** frequency and a single state or district so the file has one row per mandi, and save it in

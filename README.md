@@ -83,7 +83,7 @@ pip install -r requirements.txt
 
 python src/fetch_ceda.py        # download the data (needs a free CEDA API key, see DATA.md)
 python run_all.py               # ingest -> clean -> warehouse -> coverage tables -> quality report
-pytest -q                       # 22 tests: downloader, every source format and every cleaning rule
+pytest -q                       # 28 tests: downloader, every source format and every cleaning rule
 ```
 
 The tests run without any downloaded data: they generate small, deliberately messy files in each source format (renamed markets, duplicates, ₹/kg slips, spikes, HTML-as-Excel) and check that every cleaning rule handles them.

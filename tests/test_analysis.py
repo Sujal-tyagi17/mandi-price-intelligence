@@ -14,18 +14,6 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 
-@pytest.fixture(scope="session")
-def built(tmp_path_factory):
-    """Run the whole pipeline on the sample in a temporary folder."""
-    import sample_data
-
-    work = tmp_path_factory.mktemp("work")
-    sample_data.write(work)
-    env = {**os.environ, "MANDIPULSE_WORKDIR": str(work)}
-    subprocess.run([sys.executable, str(ROOT / "run_all.py")], env=env, check=True, capture_output=True)
-    return work / "data" / "processed"
-
-
 def read(built, name, **kw):
     return pd.read_csv(built / f"{name}.csv", **kw)
 

@@ -1,0 +1,54 @@
+[server]
+enableStaticServing = true
+
+[browser]
+gatherUsageStats = false
+
+[client]
+toolbarMode = "minimal"
+
+[theme]
+font = "Archivo, sans-serif"
+headingFont = "Archivo, sans-serif"
+headingFontWeights = [760, 700, 650, 600, 600, 600]
+headingFontSizes = ["2.4rem", "1.55rem", "1.2rem", "1.05rem", "1rem", "0.95rem"]
+baseFontSize = 15
+baseRadius = "6px"
+showWidgetBorder = true
+showSidebarBorder = true
+
+[[theme.fontFaces]]
+family = "Archivo"
+url = "app/static/fonts/archivo-latin-wdth-normal.woff2"
+weight = "100 900"
+style = "normal"
+unicodeRange = "U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD"
+
+[[theme.fontFaces]]
+family = "Archivo"
+url = "app/static/fonts/archivo-latin-ext-wdth-normal.woff2"
+weight = "100 900"
+style = "normal"
+unicodeRange = "U+0100-02AF,U+0304,U+0308,U+0329,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF"
+
+[theme.light]
+primaryColor = "#1F8A5B"
+backgroundColor = "#F4F6F9"
+secondaryBackgroundColor = "#E8ECF2"
+textColor = "#18202F"
+borderColor = "#D9DEE6"
+linkColor = "#1F7A52"
+dataframeHeaderBackgroundColor = "#EDF0F5"
+chartCategoricalColors = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"]
+chartSequentialColors = ["#cde2fb", "#b7d3f6", "#9ec5f4", "#86b6ef", "#6da7ec", "#5598e7", "#3987e5", "#2a78d6", "#256abf", "#1c5cab"]
+
+[theme.dark]
+primaryColor = "#3FBF85"
+backgroundColor = "#0E131C"
+secondaryBackgroundColor = "#1A2230"
+textColor = "#E7EBF2"
+borderColor = "#2A3344"
+linkColor = "#6DA7EC"
+dataframeHeaderBackgroundColor = "#161D29"
+chartCategoricalColors = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"]
+chartSequentialColors = ["#104281", "#184f95", "#1c5cab", "#256abf", "#2a78d6", "#3987e5", "#5598e7", "#6da7ec", "#86b6ef", "#9ec5f4"]

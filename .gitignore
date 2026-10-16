@@ -9,3 +9,13 @@ venv/
 data/mandi.duckdb
 data/mandi.duckdb.wal
 data/interim/
+
+# raw downloads are large and reproducible with src/fetch_ceda.py; the dashboard only needs data/processed/
+data/raw/**/*.csv
+data/raw/**/*.csv.gz
+data/raw/**/*.xls
+data/raw/**/*.xlsx
+data/raw/**/*.json
+
+# synthetic demo folder (python tests/sample_data.py demo)
+demo/

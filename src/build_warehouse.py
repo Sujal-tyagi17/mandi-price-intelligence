@@ -10,6 +10,8 @@ Run after ingest.py:  python src/build_warehouse.py
 
 from __future__ import annotations
 
+import datetime as dt
+import json
 from pathlib import Path
 
 import duckdb
@@ -38,6 +40,7 @@ def build(db_path: Path = DB_PATH, interim: Path = INTERIM, processed: Path = PR
         results[name] = len(df)
 
     write_quality_report(con, reports)
+    write_build_info(con, processed)
     con.close()
     return results
 
@@ -69,6 +72,19 @@ def write_quality_report(con: duckdb.DuckDBPyConnection, reports: Path) -> None:
               "|---|---:|---:|---:|"]
     lines += [f"| {c} | {m:,} | {d:,} | {p:,.0f} |" for c, m, d, p in crops]
     (reports / "data_quality.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def write_build_info(con: duckdb.DuckDBPyConnection, processed: Path) -> None:
+    """What the outputs were built from; the dashboard warns loudly if it was the synthetic sample."""
+    files = [r[0] for r in con.execute("SELECT DISTINCT source_file FROM raw_prices").fetchall()]
+    span = con.execute("SELECT min(price_date), max(price_date) FROM fact_market_day").fetchone()
+    info = {
+        "built_at": dt.datetime.now().isoformat(timespec="seconds"),
+        "sample_data": any(Path(str(f)).name.startswith("SAMPLE_") for f in files),
+        "source_files": len(files),
+        "first_date": str(span[0]), "last_date": str(span[1]),
+    }
+    (processed / "build_info.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
 
 
 def main() -> None:

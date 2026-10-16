@@ -42,6 +42,7 @@ BASE_URL = "https://api.ceda.ashoka.edu.in/v1"
 # arrivals: tried once; if the endpoint isn't available, prices are saved without arrivals
 QUANTITY_PATHS = ["/agmarknet/quantities", "/agmarknet/quantity"]
 QUANTITY_FIELDS = ["quantity", "arrival", "arrivals", "arrival_quantity", "value"]
+CHUNK = 1  # districts per request (one district per call keeps CEDA responses fast)
 
 
 def load_key() -> str | None:
@@ -67,18 +68,20 @@ class Ceda:
 
     # -- transport --------------------------------------------------------------
     def call(self, method: str, path: str, body: dict | None = None, retries: int = 5) -> list:
-        for attempt in range(retries + 1):
+        attempt, rate_waits = 0, 0
+        while attempt <= retries:
             t0 = time.time()
             if self.verbose:
                 print(f"    -> {method} {path} ...", end="", flush=True)
             try:
-                r = self.http.request(method, BASE_URL + path, json=body, timeout=(15, 90))
+                r = self.http.request(method, BASE_URL + path, json=body, timeout=(15, 60))
             except requests.RequestException as e:
                 if self.verbose:
                     print(f" failed after {time.time() - t0:.0f}s ({type(e).__name__})", flush=True)
                 if attempt == retries:
                     raise RuntimeError(f"Network error calling CEDA {path}: {e}") from e
                 time.sleep(2 * (attempt + 1))
+                attempt += 1
                 continue
             if self.verbose:
                 try:
@@ -86,8 +89,9 @@ class Ceda:
                 except ValueError:
                     n = 0
                 print(f" HTTP {r.status_code} in {time.time() - t0:.1f}s" + (f", {n:,} rows" if n else ""), flush=True)
-            if r.status_code == 429 and attempt < retries:
-                wait = float(r.headers.get("Retry-After", 5 * (attempt + 1)))
+            if r.status_code == 429 and rate_waits < 8:      # rate limit: always wait and retry
+                rate_waits += 1
+                wait = float(r.headers.get("Retry-After", 5 * rate_waits))
                 print(f"    rate limited by CEDA, waiting {wait:.0f}s", flush=True)
                 time.sleep(wait)
                 continue
@@ -95,6 +99,7 @@ class Ceda:
                 raise SystemExit("CEDA rejected the API key (HTTP %d). Check CEDA_API_KEY." % r.status_code)
             if r.status_code >= 500 and attempt < retries:
                 time.sleep(3 * (attempt + 1))
+                attempt += 1
                 continue
             r.raise_for_status()
             out = r.json().get("output", {})
@@ -142,9 +147,25 @@ class Ceda:
 
     # -- data -----------------------------------------------------------------------
     def prices(self, commodity_id: int, state_id: int, district_ids: list[int], start: str, end: str) -> list:
-        return self.call("POST", "/agmarknet/prices", {"commodity_id": commodity_id, "state_id": state_id,
-                                                       "district_id": district_ids,
-                                                       "from_date": start, "to_date": end})
+        """Fetch prices; if CEDA is too slow for the request, split it (fewer districts, then shorter dates)."""
+        body = {"commodity_id": commodity_id, "state_id": state_id, "district_id": district_ids,
+                "from_date": start, "to_date": end}
+        try:
+            return self.call("POST", "/agmarknet/prices", body, retries=0)
+        except (RuntimeError, requests.HTTPError) as e:
+            s, t = pd.Timestamp(start), pd.Timestamp(end)
+            if len(district_ids) > 1:
+                half = len(district_ids) // 2
+                print(f"    too slow, splitting {len(district_ids)} districts into two requests", flush=True)
+                return (self.prices(commodity_id, state_id, district_ids[:half], start, end)
+                        + self.prices(commodity_id, state_id, district_ids[half:], start, end))
+            if (t - s).days > 31:
+                mid = s + (t - s) / 2
+                print(f"    too slow, splitting {start}..{end} into two date ranges", flush=True)
+                return (self.prices(commodity_id, state_id, district_ids, start, mid.date().isoformat())
+                        + self.prices(commodity_id, state_id, district_ids,
+                                      (mid + pd.Timedelta(days=1)).date().isoformat(), end))
+            raise RuntimeError(f"CEDA could not return prices for district {district_ids} {start}..{end}: {e}") from e
 
     def quantities(self, commodity_id: int, state_id: int, district_ids: list[int], start: str, end: str) -> list:
         paths = QUANTITY_PATHS if self.quantity_path == "unknown" else ([self.quantity_path] if self.quantity_path else [])
@@ -168,8 +189,8 @@ def fetch_year(api: Ceda, commodity: str, state: str, year: int, start: str, end
     sid, geo = api.state(state)
     district_ids = sorted(int(d) for d in geo.census_district_id.unique())
     rows = []
-    for i in range(0, len(district_ids), 10):       # 10 districts per request keeps responses small
-        rows += api.prices(cid, sid, district_ids[i:i + 10], start, end)
+    for i in range(0, len(district_ids), CHUNK):     # a few districts per request keeps responses small
+        rows += api.prices(cid, sid, district_ids[i:i + CHUNK], start, end)
     if not rows:
         return pd.DataFrame()
     df = pd.DataFrame(rows)
@@ -191,8 +212,8 @@ def fetch_year(api: Ceda, commodity: str, state: str, year: int, start: str, end
     })
 
     qty = []
-    for i in range(0, len(district_ids), 10):
-        qty += api.quantities(cid, sid, district_ids[i:i + 10], start, end)
+    for i in range(0, len(district_ids), CHUNK):
+        qty += api.quantities(cid, sid, district_ids[i:i + CHUNK], start, end)
     if qty:
         q = pd.DataFrame(qty)
         field = next((f for f in QUANTITY_FIELDS if f in q.columns), None)

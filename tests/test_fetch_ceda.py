@@ -104,3 +104,26 @@ def test_key_read_from_env_file(tmp_path, monkeypatch):
     monkeypatch.setattr(fetch_ceda, "ROOT", tmp_path)
     (tmp_path / ".env").write_text('CEDA_API_KEY="abc123"\n')
     assert fetch_ceda.load_key() == "abc123"
+
+
+class SlowCeda(FakeCeda):
+    """Times out whenever more than one district or more than ~2 months are requested at once."""
+
+    def request(self, method, url, json=None, timeout=None):
+        import requests
+        if url.endswith("/agmarknet/prices"):
+            span = (pd.Timestamp(json["to_date"]) - pd.Timestamp(json["from_date"])).days
+            if len(json["district_id"]) > 1 or span > 62:
+                self.calls.append((method, "TIMEOUT", json))
+                raise requests.ReadTimeout("too slow")
+        return super().request(method, url, json, timeout)
+
+
+def test_slow_requests_are_split_until_they_succeed():
+    fake = SlowCeda()
+    api = fetch_ceda.Ceda("key", session=fake, pause=0)
+    df = fetch_ceda.fetch_year(api, "Onion", "Maharashtra", 2024, "2024-01-01", "2024-12-31")
+    assert set(df.market) == {"Lasalgaon", "Pimpalgaon", "Pune"}
+    ok = [b for _, p, b in fake.calls if p == "/agmarknet/prices"]
+    assert all(len(b["district_id"]) == 1 for b in ok)
+    assert any(c[1] == "TIMEOUT" for c in fake.calls)
